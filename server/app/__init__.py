@@ -14,6 +14,8 @@ from app.logging_config import configure_logging
 from app.seed import seed_demo_accounts, seed_demo_data
 
 
+
+
 def create_app(config=None):
     server_directory = Path(__file__).resolve().parent.parent
     load_dotenv(server_directory / ".env")
