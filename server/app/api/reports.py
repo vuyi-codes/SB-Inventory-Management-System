@@ -9,10 +9,9 @@ reports_bp = Blueprint('reports', __name__, url_prefix='/reports')
 
 @reports_bp.route('/dashboard', methods=['GET'])
 def get_dashboard():
-
     total_products = db.session.query(func.count(Product.id)).scalar() or 0
-    total_stock_value = db.session.query(func.sum(Product.stock_level * Product.cost)).scalar() or 0
-    low_stock_count = db.session.query(func.count(Product.id)).filter(Product.stock_level <= Product.reorder_level).scalar() or 0
+    total_stock_value = db.session.query(func.sum(Product.quantity * Product.cost_price)).scalar() or 0
+    low_stock_count = db.session.query(func.count(Product.id)).filter(Product.quantity <= Product.reorder_level).scalar() or 0
     total_sales_revenue = db.session.query(func.sum(Sale.total_amount)).filter(Sale.status == 'completed').scalar() or 0
 
     return jsonify({
@@ -26,22 +25,21 @@ def get_dashboard():
             "revenue": "Total money earned from completed (non-refunded) sales.",
             "gross_profit": "Revenue minus the original cost of the items sold (COGS).",
             "refunds": "Total value of returned or canceled sales.",
-            "stock_valuation": "Total financial asset value of current stock on hand (Quantity * Cost)."
+            "stock_valuation": "Total financial asset value of current stock on hand (Quantity * Cost Price)."
         }
     }), 200
 
-@reports_bp.route('/reports/sales', methods=['sales-report']) # accessible via /api/reports/sales due to prefix structure
 @reports_bp.route('/sales', methods=['GET'])
 def sales_report():
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    export_format = request.args.get('format') # Pass ?format=csv to download
+    export_format = request.args.get('format')
 
     query = Sale.query
     if start_date:
-        query = query.filter(Sale.created_at >= datetime.fromisoformat(start_date))
+        query = query.filter(Sale.sold_at >= datetime.fromisoformat(start_date))
     if end_date:
-        query = query.filter(Sale.created_at <= datetime.fromisoformat(end_date))
+        query = query.filter(Sale.sold_at <= datetime.fromisoformat(end_date))
 
     sales = query.all()
 
@@ -50,7 +48,11 @@ def sales_report():
 
     total_revenue = sum(s.total_amount for s in completed_sales)
     total_refunds = sum(s.total_amount for s in refunded_sales)
-    total_cost = sum(item.unit_cost * item.quantity for s in completed_sales for item in s.items)
+    
+    completed_sale_ids = [s.id for s in completed_sales]
+    sale_items = SaleItem.query.filter(SaleItem.sale_id.in_(completed_sale_ids)).all() if completed_sale_ids else []
+    total_cost = sum(item.unit_cost * item.quantity for item in sale_items)
+    
     gross_profit = total_revenue - total_cost
 
     data = {
@@ -61,7 +63,6 @@ def sales_report():
         "gross_profit": float(gross_profit)
     }
 
-    # Safe CSV Export handling
     if export_format == 'csv':
         output = io.StringIO()
         writer = csv.writer(output)
@@ -83,12 +84,12 @@ def inventory_report():
 
     report_data = []
     for p in products:
-        valuation = float(p.stock_level * p.cost)
+        valuation = float(p.quantity * p.cost_price)
         report_data.append({
             "product_id": p.id,
             "name": p.name,
-            "stock_level": p.stock_level,
-            "unit_cost": float(p.cost),
+            "stock_level": p.quantity,
+            "unit_cost": float(p.cost_price),
             "stock_valuation": valuation
         })
 
@@ -108,12 +109,12 @@ def inventory_report():
 
 @reports_bp.route('/low-stock', methods=['GET'])
 def low_stock_report():
-    products = Product.query.filter(Product.stock_level <= Product.reorder_level).all()
+    products = Product.query.filter(Product.quantity <= Product.reorder_level).all()
     return jsonify({
         "low_stock_products": [{
             "id": p.id,
             "name": p.name,
-            "stock_level": p.stock_level,
+            "stock_level": p.quantity,
             "reorder_level": p.reorder_level
         } for p in products]
     }), 200
@@ -125,7 +126,7 @@ def stock_movements_report():
         "movements": [{
             "id": m.id,
             "product_id": m.product_id,
-            "quantity": m.quantity,
+            "quantity_change": m.quantity_change,
             "movement_type": m.movement_type,
             "reference_id": m.reference_id,
             "created_at": m.created_at.isoformat() if m.created_at else None
